@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { Download, Copy, Play, Pause, Settings2, MousePointer2, Code2, FileImage } from 'lucide-react';
 
-type Point3D = { x: number; y: number; z: number };
+type Point3D = { x: number; y: number; z: number; label?: string };
 type Edge = [number, number];
 
 interface ShapeData {
@@ -529,6 +529,84 @@ const generateIcosahedron = (radius: number): ShapeData => {
   return { points, edges: uniqueEdges };
 };
 
+const generateUniversalNetwork = (radius: number, arms: number, depth: number): ShapeData => {
+  const points: Point3D[] = [];
+  const edges: Edge[] = [];
+
+  points.push({ x: 0, y: 0, z: 0, label: 'Core' });
+
+  let currentLevelNodes = [0];
+  let nodeIndex = 1;
+
+  for (let d = 1; d <= depth; d++) {
+    const nextLevelNodes: number[] = [];
+    const levelRadius = radius * (d / depth);
+    const nodesInLevel = arms * d;
+
+    for (let i = 0; i < nodesInLevel; i++) {
+      const phi = Math.acos(-1 + (2 * i) / nodesInLevel);
+      const theta = Math.sqrt(nodesInLevel * Math.PI) * phi;
+
+      const x = levelRadius * Math.cos(theta) * Math.sin(phi);
+      const y = levelRadius * Math.sin(theta) * Math.sin(phi);
+      const z = levelRadius * Math.cos(phi);
+
+      points.push({ x, y, z, label: `Node ${nodeIndex}` });
+      nextLevelNodes.push(nodeIndex);
+
+      const parentIndex = currentLevelNodes[Math.floor(Math.random() * currentLevelNodes.length)];
+      edges.push([parentIndex, nodeIndex]);
+
+      nodeIndex++;
+    }
+
+    for (let i = 0; i < nextLevelNodes.length; i++) {
+      if (Math.random() > 0.7) {
+        const siblingIndex = nextLevelNodes[(i + 1) % nextLevelNodes.length];
+        edges.push([nextLevelNodes[i], siblingIndex]);
+      }
+    }
+
+    currentLevelNodes = nextLevelNodes;
+  }
+
+  return { points, edges };
+};
+
+const generateHorn = (radius: number, length: number, segments: number, radialSegments: number): ShapeData => {
+  const points: Point3D[] = [];
+  const edges: Edge[] = [];
+
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments;
+    const currentRadius = radius * Math.pow(1 - t, 1.5); 
+    
+    const cx = length * 0.8 * Math.pow(t, 2);
+    const cy = length * 0.3 * Math.sin(t * Math.PI);
+    const cz = -length * t + length / 2;
+
+    for (let j = 0; j < radialSegments; j++) {
+      const angle = (j / radialSegments) * Math.PI * 2;
+      
+      const px = cx + Math.cos(angle) * currentRadius;
+      const py = cy + Math.sin(angle) * currentRadius;
+      const pz = cz;
+      
+      points.push({ x: px, y: py, z: pz });
+
+      if (i < segments) {
+        const current = i * radialSegments + j;
+        const next = i * radialSegments + ((j + 1) % radialSegments);
+        const bottom = (i + 1) * radialSegments + j;
+        edges.push([current, next]);
+        edges.push([current, bottom]);
+      }
+    }
+  }
+
+  return { points, edges };
+};
+
 const rotatePoint = (p: Point3D, pitch: number, yaw: number, roll: number): Point3D => {
   let cos = Math.cos(yaw);
   let sin = Math.sin(yaw);
@@ -547,6 +625,28 @@ const rotatePoint = (p: Point3D, pitch: number, yaw: number, roll: number): Poin
   let x3 = x2 * cos - y2 * sin;
   let y3 = y2 * cos + x2 * sin;
   let z3 = z2;
+
+  return { x: x3, y: y3, z: z3 };
+};
+
+const inverseRotatePoint = (p: Point3D, pitch: number, yaw: number, roll: number): Point3D => {
+  let cos = Math.cos(-roll);
+  let sin = Math.sin(-roll);
+  let x1 = p.x * cos - p.y * sin;
+  let y1 = p.y * cos + p.x * sin;
+  let z1 = p.z;
+
+  cos = Math.cos(-pitch);
+  sin = Math.sin(-pitch);
+  let y2 = y1 * cos - z1 * sin;
+  let z2 = z1 * cos + y1 * sin;
+  let x2 = x1;
+
+  cos = Math.cos(-yaw);
+  sin = Math.sin(-yaw);
+  let x3 = x2 * cos - z2 * sin;
+  let z3 = z2 * cos + x2 * sin;
+  let y3 = y2;
 
   return { x: x3, y: y3, z: z3 };
 };
@@ -577,7 +677,13 @@ export default function App() {
   const svgRef = useRef<SVGSVGElement>(null);
   const requestRef = useRef<number>(null);
   const isDragging = useRef(false);
+  const draggedNodeIndex = useRef<number | null>(null);
   const lastMousePos = useRef({ x: 0, y: 0 });
+  const [customPositions, setCustomPositions] = useState<Record<number, Point3D>>({});
+
+  useEffect(() => {
+    setCustomPositions({});
+  }, [shapeType, params.radius, params.detail, params.particleCount, params.tubeRadius, params.length, params.spacing, params.arms, params.turns, params.width]);
 
   const baseShape = useMemo(() => {
     switch (shapeType) {
@@ -597,6 +703,8 @@ export default function App() {
       case 'pyramid': return generatePyramid(params.radius);
       case 'cylinder': return generateCylinder(params.radius, params.length, params.detail * 2);
       case 'icosahedron': return generateIcosahedron(params.radius);
+      case 'universal-network': return generateUniversalNetwork(params.radius, params.arms, Math.max(3, Math.floor(params.detail / 2)));
+      case 'horn': return generateHorn(params.radius, params.length, params.detail * 4, params.detail * 2);
       default: return generateSphere(params.detail, params.detail * 2, params.radius);
     }
   }, [shapeType, params.radius, params.detail, params.particleCount, params.tubeRadius, params.length, params.spacing, params.arms, params.turns, params.width]);
@@ -621,8 +729,18 @@ export default function App() {
     };
   }, [animate]);
 
+  const handleNodeMouseDown = (e: React.MouseEvent | React.TouchEvent, index: number) => {
+    e.stopPropagation();
+    isDragging.current = true;
+    draggedNodeIndex.current = index;
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    lastMousePos.current = { x: clientX, y: clientY };
+  };
+
   const handleMouseDown = (e: React.MouseEvent | React.TouchEvent) => {
     isDragging.current = true;
+    draggedNodeIndex.current = null;
     const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
     const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
     lastMousePos.current = { x: clientX, y: clientY };
@@ -636,17 +754,38 @@ export default function App() {
     const deltaX = clientX - lastMousePos.current.x;
     const deltaY = clientY - lastMousePos.current.y;
 
-    setRotation(prev => ({
-      x: prev.x + deltaY * 0.01,
-      y: prev.y + deltaX * 0.01,
-      z: prev.z
-    }));
+    if (draggedNodeIndex.current !== null) {
+      setCustomPositions(prev => {
+        const currentPos = prev[draggedNodeIndex.current!] || baseShape.points[draggedNodeIndex.current!];
+        const rotated = rotatePoint(currentPos, rotation.x, rotation.y, rotation.z);
+        const scale = params.perspective / (params.perspective + rotated.z);
+        const delta3D = { x: deltaX / scale, y: deltaY / scale, z: 0 };
+        const invRotatedDelta = inverseRotatePoint(delta3D, rotation.x, rotation.y, rotation.z);
+        
+        return {
+          ...prev,
+          [draggedNodeIndex.current!]: {
+            ...currentPos,
+            x: currentPos.x + invRotatedDelta.x,
+            y: currentPos.y + invRotatedDelta.y,
+            z: currentPos.z + invRotatedDelta.z,
+          }
+        };
+      });
+    } else {
+      setRotation(prev => ({
+        x: prev.x + deltaY * 0.01,
+        y: prev.y + deltaX * 0.01,
+        z: prev.z
+      }));
+    }
 
     lastMousePos.current = { x: clientX, y: clientY };
   };
 
   const handleMouseUp = () => {
     isDragging.current = false;
+    draggedNodeIndex.current = null;
   };
 
   const renderShape = () => {
@@ -655,14 +794,17 @@ export default function App() {
     const cx = width / 2;
     const cy = height / 2;
 
-    const projectedPoints = baseShape.points.map(p => {
-      const rotated = rotatePoint(p, rotation.x, rotation.y, rotation.z);
+    const projectedPoints = baseShape.points.map((p, i) => {
+      const actualP = customPositions[i] || p;
+      const rotated = rotatePoint(actualP, rotation.x, rotation.y, rotation.z);
       const scale = params.perspective / (params.perspective + rotated.z);
       return {
+        ...actualP,
         x: rotated.x * scale + cx,
         y: rotated.y * scale + cy,
         z: rotated.z,
-        scale
+        scale,
+        index: i
       };
     });
 
@@ -673,7 +815,7 @@ export default function App() {
       return { edge, z };
     }).sort((a, b) => b.z - a.z);
 
-    const sortedPoints = projectedPoints.map((p, i) => ({ ...p, index: i })).sort((a, b) => b.z - a.z);
+    const sortedPoints = [...projectedPoints].sort((a, b) => b.z - a.z);
 
     return (
       <svg
@@ -694,6 +836,38 @@ export default function App() {
           const p1 = projectedPoints[edge[0]];
           const p2 = projectedPoints[edge[1]];
           const opacity = Math.max(0.05, Math.min(1, (params.perspective - p1.z) / params.perspective));
+          
+          if (shapeType === 'universal-network') {
+            const curveX = p1.x;
+            const curveY = p2.y;
+            const midX = (p1.x + p2.x) / 2;
+            const midY = (p1.y + p2.y) / 2;
+            return (
+              <g key={`e-${i}`}>
+                <path
+                  d={`M ${p1.x.toFixed(2)} ${p1.y.toFixed(2)} Q ${curveX.toFixed(2)} ${curveY.toFixed(2)} ${p2.x.toFixed(2)} ${p2.y.toFixed(2)}`}
+                  fill="none"
+                  stroke={params.strokeColor}
+                  strokeWidth={(params.strokeWidth * ((p1.scale + p2.scale) / 2)).toFixed(2)}
+                  strokeOpacity={opacity.toFixed(2)}
+                  strokeLinecap="round"
+                />
+                <text
+                  x={midX.toFixed(2)}
+                  y={midY.toFixed(2)}
+                  fill={params.strokeColor}
+                  fontSize={`${Math.max(6, 8 * ((p1.scale + p2.scale) / 2))}px`}
+                  fontFamily="monospace"
+                  fillOpacity={(opacity * 0.7).toFixed(2)}
+                  className="pointer-events-none select-none"
+                  textAnchor="middle"
+                >
+                  link-{i}
+                </text>
+              </g>
+            );
+          }
+
           return (
             <line
               key={`e-${i}`}
@@ -711,15 +885,43 @@ export default function App() {
 
         {params.showPoints && sortedPoints.map((p, i) => {
           const opacity = Math.max(0.1, Math.min(1, (params.perspective - p.z) / params.perspective));
+          const isDraggable = shapeType === 'universal-network';
+          const isLabeled = !!p.label;
           return (
-            <circle
-              key={`p-${i}`}
-              cx={p.x.toFixed(2)}
-              cy={p.y.toFixed(2)}
-              r={(params.pointSize * p.scale).toFixed(2)}
-              fill={params.strokeColor}
-              fillOpacity={opacity.toFixed(2)}
-            />
+            <g key={`p-${i}`}>
+              {isDraggable && (
+                <circle
+                  cx={p.x.toFixed(2)}
+                  cy={p.y.toFixed(2)}
+                  r={Math.max(15, params.pointSize * p.scale * 3)}
+                  fill="transparent"
+                  className="cursor-pointer"
+                  onMouseDown={(e) => handleNodeMouseDown(e, p.index)}
+                  onTouchStart={(e) => handleNodeMouseDown(e, p.index)}
+                />
+              )}
+              <circle
+                cx={p.x.toFixed(2)}
+                cy={p.y.toFixed(2)}
+                r={(params.pointSize * p.scale * (isLabeled ? 2 : 1)).toFixed(2)}
+                fill={isLabeled ? '#fef08a' : params.strokeColor}
+                fillOpacity={opacity.toFixed(2)}
+                className={isDraggable ? "pointer-events-none" : ""}
+              />
+              {isLabeled && (
+                <text
+                  x={(p.x + 12 * p.scale).toFixed(2)}
+                  y={(p.y + 4 * p.scale).toFixed(2)}
+                  fill="#fef08a"
+                  fontSize={`${Math.max(10, 14 * p.scale)}px`}
+                  fontFamily="monospace"
+                  fillOpacity={opacity.toFixed(2)}
+                  className="pointer-events-none select-none drop-shadow-md"
+                >
+                  {p.label}
+                </text>
+              )}
+            </g>
           );
         })}
       </svg>
@@ -795,17 +997,22 @@ export default function App() {
           <div className="space-y-3">
             <label className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Shape Type</label>
             <div className="grid grid-cols-2 gap-2">
-              {['sphere', 'torus', 'tunnel', 'particles', 'cubes', 'burst', 'orbital', 'vortex', 'network', 'neural', 'ontology', 'helix', 'mobius', 'pyramid', 'cylinder', 'icosahedron'].map(type => (
+              {['sphere', 'torus', 'tunnel', 'particles', 'cubes', 'burst', 'orbital', 'vortex', 'network', 'universal-network', 'neural', 'ontology', 'helix', 'mobius', 'pyramid', 'cylinder', 'icosahedron', 'horn'].map(type => (
                 <button
                   key={type}
-                  onClick={() => setShapeType(type)}
+                  onClick={() => {
+                    setShapeType(type);
+                    if (type === 'universal-network') {
+                      setParams(p => ({ ...p, strokeColor: '#4ade80' }));
+                    }
+                  }}
                   className={`px-3 py-2.5 rounded-md text-xs font-medium capitalize transition-all duration-200 ${
                     shapeType === type 
                       ? 'bg-blue-600/10 text-blue-500 border border-blue-500/30' 
                       : 'bg-[#111] text-gray-400 border border-transparent hover:bg-[#1a1a1a] hover:text-gray-200'
                   }`}
                 >
-                  {type}
+                  {type.replace('-', ' ')}
                 </button>
               ))}
             </div>
@@ -829,10 +1036,10 @@ export default function App() {
               />
             </div>
 
-            {['sphere', 'torus', 'tunnel', 'orbital', 'vortex', 'ontology', 'helix', 'mobius', 'cylinder'].includes(shapeType) && (
+            {['sphere', 'torus', 'tunnel', 'orbital', 'vortex', 'ontology', 'helix', 'mobius', 'cylinder', 'universal-network', 'horn'].includes(shapeType) && (
               <div className="space-y-2">
                 <div className="flex justify-between text-xs text-gray-400">
-                  <span>Detail</span>
+                  <span>Detail / Depth</span>
                   <span className="font-mono text-gray-500">{params.detail}</span>
                 </div>
                 <input
@@ -877,7 +1084,7 @@ export default function App() {
               </div>
             )}
 
-            {['tunnel', 'helix', 'cylinder'].includes(shapeType) && (
+            {['tunnel', 'helix', 'cylinder', 'horn'].includes(shapeType) && (
               <div className="space-y-2">
                 <div className="flex justify-between text-xs text-gray-400">
                   <span>Length / Height</span>
@@ -909,10 +1116,10 @@ export default function App() {
               </div>
             )}
 
-            {shapeType === 'vortex' && (
+            {['vortex', 'universal-network'].includes(shapeType) && (
               <div className="space-y-2">
                 <div className="flex justify-between text-xs text-gray-400">
-                  <span>Arms</span>
+                  <span>Branches / Arms</span>
                   <span className="font-mono text-gray-500">{params.arms}</span>
                 </div>
                 <input
